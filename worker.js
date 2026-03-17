@@ -2,6 +2,17 @@ import { ASSETS_CONTENT, ASSETS_TYPES } from './assets-content.js';
 
 const GITHUB_API = 'https://api.github.com';
 
+// GitHub 要求带 User-Agent，否则可能返回 403
+function githubHeaders(token, extra = {}) {
+  return {
+    Accept: 'application/vnd.github+json',
+    Authorization: `Bearer ${token}`,
+    'X-GitHub-Api-Version': '2022-11-28',
+    'User-Agent': 'ForkFlow/1.0 (Cloudflare Worker)',
+    ...extra,
+  };
+}
+
 // ---------- KV 存储封装（替代本地 repos.json） ----------
 async function readRepos(env) {
   const raw = await env.REPOS_KV.get('repos', 'json');
@@ -100,12 +111,7 @@ async function syncOne(owner, repo, branch = 'main', token) {
   try {
     const res = await fetch(url, {
       method: 'POST',
-      headers: {
-        Accept: 'application/vnd.github+json',
-        Authorization: `Bearer ${token}`,
-        'X-GitHub-Api-Version': '2022-11-28',
-        'Content-Type': 'application/json',
-      },
+      headers: githubHeaders(token, { 'Content-Type': 'application/json' }),
       body: JSON.stringify({ branch }),
     });
     const data = await res.json().catch(() => ({}));
@@ -184,11 +190,7 @@ export default {
           );
         }
         const r = await fetch('https://api.github.com/user', {
-          headers: {
-            Accept: 'application/vnd.github+json',
-            Authorization: `Bearer ${token}`,
-            'X-GitHub-Api-Version': '2022-11-28',
-          },
+          headers: githubHeaders(token),
         });
         const data = await r.json().catch(() => ({}));
         if (!r.ok) {
@@ -242,11 +244,7 @@ export default {
             );
           }
           const uRes = await fetch('https://api.github.com/user', {
-            headers: {
-              Accept: 'application/vnd.github+json',
-              Authorization: `Bearer ${token}`,
-              'X-GitHub-Api-Version': '2022-11-28',
-            },
+            headers: githubHeaders(token),
           });
           const uData = await uRes.json().catch(() => ({}));
           if (!uRes.ok) {
@@ -270,11 +268,7 @@ export default {
         // 尝试补充元信息（fork/上游 时间和 commit），失败不影响添加
         try {
           if (token && result.item && result.item.id) {
-            const headers = {
-              Accept: 'application/vnd.github+json',
-              Authorization: `Bearer ${token}`,
-              'X-GitHub-Api-Version': '2022-11-28',
-            };
+            const headers = githubHeaders(token);
             const infoRes = await fetch(
               `${GITHUB_API}/repos/${owner}/${repo}`,
               { headers }
@@ -434,11 +428,7 @@ export default {
         while (true) {
           const apiUrl = `${GITHUB_API}/user/repos?per_page=${perPage}&page=${page}&sort=updated`;
           const r = await fetch(apiUrl, {
-            headers: {
-              Accept: 'application/vnd.github+json',
-              Authorization: `Bearer ${token}`,
-              'X-GitHub-Api-Version': '2022-11-28',
-            },
+            headers: githubHeaders(token),
           });
           if (!r.ok) {
             const d = await r.json().catch(() => ({}));
@@ -481,11 +471,7 @@ export default {
           const beforeIds = new Set(beforeRepos.map((r) => r.id));
           const newlyAdded = afterRepos.filter((r) => !beforeIds.has(r.id));
 
-          const headers = {
-            Accept: 'application/vnd.github+json',
-            Authorization: `Bearer ${token}`,
-            'X-GitHub-Api-Version': '2022-11-28',
-          };
+          const headers = githubHeaders(token);
 
           for (const repo of newlyAdded) {
             try {
@@ -582,11 +568,7 @@ export default {
           return jsonResponse({ ok: true, message: '暂无配置的仓库', data: [] });
         }
 
-        const headers = {
-          Accept: 'application/vnd.github+json',
-          Authorization: `Bearer ${token}`,
-          'X-GitHub-Api-Version': '2022-11-28',
-        };
+        const headers = githubHeaders(token);
 
         const results = [];
 

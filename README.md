@@ -28,18 +28,17 @@ npm start
 
 | 配置项 | 位置 |
 |--------|------|
-| `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_KV_NAMESPACE_ID` | **GitHub 仓库** → Settings → Secrets and variables → **Actions**（CI 部署用；KV 的 id 在 Cloudflare 创建 KV 后复制过来，部署时自动绑定到 Worker） |
-| `GITHUB_TOKEN` | **Cloudflare** → Workers & Pages → 该 Worker → Settings → **Variables and Secrets**（Worker 调 GitHub API 用，勿放进 GitHub） |
+| `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_KV_NAMESPACE_ID` | **GitHub 仓库** → Settings → Secrets and variables → **Actions**（CI 部署用；KV id 在 Cloudflare 创建 KV 后复制过来） |
+| `GITHUB_TOKEN` | **GitHub 仓库** → Settings → Secrets and variables → **Actions**（你的 GitHub PAT，需 `repo` + `read:user`；每次部署会自动同步到 Worker，无需再去 Cloudflare 里配） |
 
-无需改 wrangler.toml，也无需在 Cloudflare 里给 Worker 手动加 KV 绑定：在 Cloudflare 创建 KV 后，把 id 填到 GitHub Secret 即可，部署时会自动绑定。
+无需改 wrangler.toml。GITHUB_TOKEN 配在 GitHub 后，每次部署都会通过 `wrangler secret put` 写入 Worker，不用在 Cloudflare 里重复配置。
 
 ### Fork 后自动部署
 
 1. Fork 本仓库。
 2. **Cloudflare**：拿 [Account ID](https://dash.cloudflare.com/)；建 [API Token](https://dash.cloudflare.com/profile/api-tokens)（Workers Scripts: Edit、KV: Edit）；在 **Workers KV** 里创建命名空间（或本地 `npx wrangler kv:namespace create REPOS_KV`），复制生成的 **id**。
-3. **GitHub**：Fork 仓库 → Settings → Secrets and variables → Actions，添加 `CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`、`CLOUDFLARE_KV_NAMESPACE_ID`（上一步的 id）。
-4. 首次部署成功后，在 **Cloudflare** 为该 Worker 添加 Secret `GITHUB_TOKEN`。
-5. 推送到 `main` 即触发部署。
+3. **GitHub**：Fork 仓库 → Settings → Secrets and variables → Actions，添加四个 Secret：`CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`、`CLOUDFLARE_KV_NAMESPACE_ID`、**`GITHUB_TOKEN`**（你的 GitHub PAT，权限勾选 `repo` 和 `read:user`）。
+4. 推送到 `main` 即触发部署；GITHUB_TOKEN 会在每次部署时自动同步到 Worker，无需在 Cloudflare 里再配。
 
 本地部署：先运行 `node build-embed-assets.js` 生成前端内联文件，再在 wrangler.toml 填好 account_id 与 KV id，执行 `npx wrangler deploy`。
 
