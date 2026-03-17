@@ -29,7 +29,7 @@ npm start
 > 这些都配置在 **GitHub 仓库** → Settings → Secrets and variables → Actions。
 
 
-| 名称                           | 必填  | 用途                                                                              |
+| 名称                           |    必填    | 用途                                                                              |
 | ---------------------------- | --- | ------------------------------------------------------------------------------- |
 | `CLOUDFLARE_API_TOKEN`       | ✅   | GitHub Actions 调用 Wrangler 部署 Workers                                           |
 | `CLOUDFLARE_ACCOUNT_ID`      | ✅   | 你的 Cloudflare Account ID                                                        |
@@ -51,7 +51,7 @@ OAuth App 创建入口：[GitHub Developer Settings → OAuth Apps](https://gith
 
 1. Fork 本仓库。
 2. **Cloudflare**：拿 [Account ID](https://dash.cloudflare.com/)；建 [API Token](https://dash.cloudflare.com/profile/api-tokens)（Workers Scripts: Edit、KV: Edit）；在 **Workers KV** 里创建命名空间（或本地 `npx wrangler kv:namespace create REPOS_KV`），复制生成的 **id**。
-3. **GitHub**：Fork 仓库 → Settings → Secrets and variables → Actions，添加必填的 `CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`、`CLOUDFLARE_KV_NAMESPACE_ID`；再二选一：配 `**GH_TOKEN`**（PAT）或配 `**GH_OAUTH_CLIENT_ID` + `GH_OAUTH_CLIENT_SECRET**`（OAuth 登录，见上表）。
+3. **GitHub**：Fork 仓库 → Settings → Secrets and variables → Actions，添加必填的 `CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`、`CLOUDFLARE_KV_NAMESPACE_ID`；再二选一：配 `**GH_TOKEN`**（PAT）或配 `**GH_OAUTH_CLIENT_ID` + `GH_OAUTH_CLIENT_SECRET`**（OAuth 登录，见上表）。
 4. 推送到 `main` 即触发部署。
 
 本地部署：先运行 `node build-embed-assets.js` 生成前端内联文件，再在 wrangler.toml 填好 account_id 与 KV id，执行 `npx wrangler deploy`。
