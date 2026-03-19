@@ -573,7 +573,8 @@ export default {
             if (infoRes.ok) {
               const info = await infoRes.json();
               const forkPushedAt = info.pushed_at || null;
-              const forkBranch = info.default_branch || repo.branch || 'main';
+              // 与本地一致：优先使用配置分支，否则使用 default_branch
+              const forkBranch = repo.branch || info.default_branch || 'main';
 
               let forkLastCommitSha = null;
               let forkLastCommitMessage = null;
@@ -598,10 +599,12 @@ export default {
               let upstreamPushedAt = null;
               let upstreamLastCommitSha = null;
               let upstreamLastCommitMessage = null;
+              let isBehindUpstream = false;
               if (info.parent && info.parent.full_name) {
                 upstreamFullName = info.parent.full_name;
                 upstreamPushedAt = info.parent.pushed_at || null;
-                const upstreamBranch = info.parent.default_branch || 'main';
+                // 与本地一致：优先使用配置分支，否则使用上游 default_branch
+                const upstreamBranch = repo.branch || info.parent.default_branch || 'main';
                 try {
                   const uRes = await fetch(
                     `${GITHUB_API}/repos/${info.parent.owner.login}/${info.parent.name}/commits?per_page=1&sha=${upstreamBranch}`,
@@ -618,6 +621,24 @@ export default {
                 } catch {
                   // ignore
                 }
+
+                // compare 判断是否落后（与本地一致：compare 失败默认 false）
+                try {
+                  const [upOwner, upRepo] = upstreamFullName.split('/');
+                  const cmpRes = await fetch(
+                    `${GITHUB_API}/repos/${upOwner}/${upRepo}/compare/${upstreamBranch}...${repo.owner}:${forkBranch}`,
+                    { headers }
+                  );
+                  if (cmpRes.ok) {
+                    const cmp = await cmpRes.json().catch(() => ({}));
+                    const behind = Number(cmp && cmp.behind_by);
+                    if (!Number.isNaN(behind) && behind > 0) {
+                      isBehindUpstream = true;
+                    }
+                  }
+                } catch {
+                  // ignore
+                }
               }
               await updateRepo(env, id, {
                 forkPushedAt,
@@ -627,6 +648,7 @@ export default {
                 upstreamPushedAt,
                 upstreamLastCommitSha,
                 upstreamLastCommitMessage,
+                isBehindUpstream,
               }, username);
             }
           } catch {
@@ -885,34 +907,24 @@ export default {
             }
 
             const forkPushedAt = info.pushed_at || null;
-            const forkDefaultBranch = info.default_branch || 'main';
-            const forkBranch = r.branch || forkDefaultBranch;
+            // 与本地一致：优先使用配置分支，否则使用 GitHub default_branch
+            const forkBranch = r.branch || info.default_branch || 'main';
 
-            // fork 最新 commit（若配置分支不存在则回退到默认分支）
+            // fork 最新 commit（与本地一致：不做回退/兜底）
             let forkLastCommitSha = null;
             let forkLastCommitMessage = null;
             try {
-              async function fetchForkCommit(branchName) {
-                const cRes = await fetch(
-                  `${GITHUB_API}/repos/${r.owner}/${r.repo}/commits?per_page=1&sha=${branchName}`,
-                  { headers }
-                );
-                if (!cRes.ok) return null;
-                const commits = await cRes.json().catch(() => null);
-                if (!Array.isArray(commits) || !commits[0]) return null;
-                return {
-                  sha: commits[0].sha || null,
-                  message: (commits[0].commit && commits[0].commit.message) || null,
-                };
-              }
-
-              let forkCommit = await fetchForkCommit(forkBranch);
-              if (!forkCommit && forkDefaultBranch && forkDefaultBranch !== forkBranch) {
-                forkCommit = await fetchForkCommit(forkDefaultBranch);
-              }
-              if (forkCommit) {
-                forkLastCommitSha = forkCommit.sha;
-                forkLastCommitMessage = forkCommit.message;
+              const cRes = await fetch(
+                `${GITHUB_API}/repos/${r.owner}/${r.repo}/commits?per_page=1&sha=${forkBranch}`,
+                { headers }
+              );
+              if (cRes.ok) {
+                const commits = await cRes.json();
+                if (Array.isArray(commits) && commits[0]) {
+                  forkLastCommitSha = commits[0].sha || null;
+                  forkLastCommitMessage =
+                    (commits[0].commit && commits[0].commit.message) || null;
+                }
               }
             } catch {
               // ignore
@@ -920,78 +932,41 @@ export default {
 
             let upstreamFullName = info.parent.full_name;
             let upstreamPushedAt = info.parent.pushed_at || null;
-            const upstreamDefaultBranch = info.parent.default_branch || 'main';
-            let upstreamBranch = r.branch || upstreamDefaultBranch;
+            // 与本地一致：优先使用配置分支，否则使用上游 default_branch
+            let upstreamBranch = r.branch || info.parent.default_branch || 'main';
 
-            // upstream 最新 commit（若配置分支不存在则回退到默认分支）
+            // upstream 最新 commit（与本地一致：不做回退/兜底）
             let upstreamLastCommitSha = null;
             let upstreamLastCommitMessage = null;
             try {
-              async function fetchUpstreamCommit(branchName) {
-                const uRes = await fetch(
-                  `${GITHUB_API}/repos/${info.parent.owner.login}/${info.parent.name}/commits?per_page=1&sha=${branchName}`,
-                  { headers }
-                );
-                if (!uRes.ok) return null;
-                const uCommits = await uRes.json().catch(() => null);
-                if (!Array.isArray(uCommits) || !uCommits[0]) return null;
-                return {
-                  sha: uCommits[0].sha || null,
-                  message:
-                    (uCommits[0].commit && uCommits[0].commit.message) || null,
-                };
-              }
-
-              let upCommit = await fetchUpstreamCommit(upstreamBranch);
-              if (
-                !upCommit &&
-                upstreamDefaultBranch &&
-                upstreamDefaultBranch !== upstreamBranch
-              ) {
-                upCommit = await fetchUpstreamCommit(upstreamDefaultBranch);
-              }
-              if (upCommit) {
-                upstreamLastCommitSha = upCommit.sha;
-                upstreamLastCommitMessage = upCommit.message;
+              const uRes = await fetch(
+                `${GITHUB_API}/repos/${info.parent.owner.login}/${info.parent.name}/commits?per_page=1&sha=${upstreamBranch}`,
+                { headers }
+              );
+              if (uRes.ok) {
+                const uCommits = await uRes.json();
+                if (Array.isArray(uCommits) && uCommits[0]) {
+                  upstreamLastCommitSha = uCommits[0].sha || null;
+                  upstreamLastCommitMessage =
+                    (uCommits[0].commit && uCommits[0].commit.message) || null;
+                }
               }
             } catch {
               // ignore
             }
 
-            // compare 判断是否落后上游
+            // compare 判断是否落后上游（与本地一致：compare 失败默认 false）
             let isBehindUpstream = false;
             try {
               const [upOwner, upRepo] = upstreamFullName.split('/');
-              async function fetchCompare(upBranch, forkBr) {
-                const cmpRes = await fetch(
-                  `${GITHUB_API}/repos/${upOwner}/${upRepo}/compare/${upBranch}...${r.owner}:${forkBr}`,
-                  { headers }
-                );
-                if (!cmpRes.ok) return null;
-                return await cmpRes.json().catch(() => null);
-              }
-
-              let cmp = await fetchCompare(upstreamBranch, forkBranch);
-              if (
-                !cmp &&
-                (upstreamBranch !== upstreamDefaultBranch ||
-                  forkBranch !== forkDefaultBranch)
-              ) {
-                cmp = await fetchCompare(upstreamDefaultBranch, forkDefaultBranch);
-              }
-
-              if (cmp) {
+              const cmpRes = await fetch(
+                `${GITHUB_API}/repos/${upOwner}/${upRepo}/compare/${upstreamBranch}...${r.owner}:${forkBranch}`,
+                { headers }
+              );
+              if (cmpRes.ok) {
+                const cmp = await cmpRes.json().catch(() => ({}));
                 const behind = Number(cmp && cmp.behind_by);
                 if (!Number.isNaN(behind) && behind > 0) {
-                  isBehindUpstream = true;
-                }
-              } else {
-                // compare 失败兜底：两边 SHA 都存在且不一致时，至少提示“需同步/有差异”
-                if (
-                  upstreamLastCommitSha &&
-                  forkLastCommitSha &&
-                  upstreamLastCommitSha !== forkLastCommitSha
-                ) {
                   isBehindUpstream = true;
                 }
               }
