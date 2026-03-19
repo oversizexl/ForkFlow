@@ -191,7 +191,7 @@ app.post('/api/repos', (req, res) => {
           if (infoRes.ok) {
             const info = await infoRes.json();
             const forkPushedAt = info.pushed_at || null;
-            const forkBranch = info.default_branch || branch || 'main';
+              const forkBranch = branch || info.default_branch || 'main';
 
             let forkLastCommitSha = null;
             let forkLastCommitMessage = null;
@@ -216,11 +216,12 @@ app.post('/api/repos', (req, res) => {
             let upstreamPushedAt = null;
             let upstreamLastCommitSha = null;
             let upstreamLastCommitMessage = null;
+            let isBehindUpstream = false;
 
             if (info.parent && info.parent.full_name) {
               upstreamFullName = info.parent.full_name;
               upstreamPushedAt = info.parent.pushed_at || null;
-              const upstreamBranch = info.parent.default_branch || 'main';
+              const upstreamBranch = branch || info.parent.default_branch || 'main';
               try {
                 const uRes = await fetch(
                   `https://api.github.com/repos/${info.parent.owner.login}/${info.parent.name}/commits?per_page=1&sha=${upstreamBranch}`,
@@ -237,6 +238,24 @@ app.post('/api/repos', (req, res) => {
               } catch {
                 // 忽略上游 commit 查询失败
               }
+
+              // compare 判断是否落后上游（用于前端“需同步”红色状态）
+              try {
+                const [upOwner, upRepo] = upstreamFullName.split('/');
+                const cmpRes = await fetch(
+                  `https://api.github.com/repos/${upOwner}/${upRepo}/compare/${upstreamBranch}...${owner}:${forkBranch}`,
+                  { headers }
+                );
+                if (cmpRes.ok) {
+                  const cmp = await cmpRes.json().catch(() => ({}));
+                  const behind = Number(cmp && cmp.behind_by);
+                  if (!Number.isNaN(behind) && behind > 0) {
+                    isBehindUpstream = true;
+                  }
+                }
+              } catch {
+                // compare 失败时保持默认 false
+              }
             }
 
             if (result.item && result.item.id) {
@@ -248,6 +267,7 @@ app.post('/api/repos', (req, res) => {
                 upstreamPushedAt,
                 upstreamLastCommitSha,
                 upstreamLastCommitMessage,
+                isBehindUpstream,
               });
             }
           }
@@ -332,7 +352,8 @@ app.post('/api/sync/:id', async (req, res) => {
         if (infoRes.ok) {
           const info = await infoRes.json();
           const forkPushedAt = info.pushed_at || null;
-          const forkBranch = info.default_branch || repo.branch || 'main';
+          // 需同步判断必须以用户配置的分支为准；否则会出现“列表显示为 branch=X，但后台按 default_branch=X' 判断”的情况
+          const forkBranch = repo.branch || info.default_branch || 'main';
 
           let forkLastCommitSha = null;
           let forkLastCommitMessage = null;
@@ -363,7 +384,8 @@ app.post('/api/sync/:id', async (req, res) => {
           if (info.parent && info.parent.full_name) {
             upstreamFullName = info.parent.full_name;
             upstreamPushedAt = info.parent.pushed_at || null;
-            const upstreamBranch = info.parent.default_branch || 'main';
+            // 同理：上游对比也应优先使用用户配置的分支名
+            const upstreamBranch = repo.branch || info.parent.default_branch || 'main';
             try {
               const uRes = await fetch(
                 `https://api.github.com/repos/${info.parent.owner.login}/${info.parent.name}/commits?per_page=1&sha=${upstreamBranch}`,
@@ -511,7 +533,7 @@ app.post('/api/import-forks', async (req, res) => {
           const info = await infoRes.json();
 
           const forkPushedAt = info.pushed_at || null;
-          const forkBranch = info.default_branch || repo.branch || 'main';
+              const forkBranch = repo.branch || info.default_branch || 'main';
 
           // 2) 拉取 fork 仓库最新一条 commit
           let forkLastCommitSha = null;
@@ -538,11 +560,12 @@ app.post('/api/import-forks', async (req, res) => {
           let upstreamPushedAt = null;
           let upstreamLastCommitSha = null;
           let upstreamLastCommitMessage = null;
+              let isBehindUpstream = false;
 
           if (info.parent && info.parent.full_name) {
             upstreamFullName = info.parent.full_name;
             upstreamPushedAt = info.parent.pushed_at || null;
-            const upstreamBranch = info.parent.default_branch || 'main';
+                const upstreamBranch = repo.branch || info.parent.default_branch || 'main';
 
             try {
               const uRes = await fetch(
@@ -560,6 +583,24 @@ app.post('/api/import-forks', async (req, res) => {
             } catch {
               // 忽略上游 commit 查询失败
             }
+
+                // compare 判断是否落后上游（用于前端“需同步”红色状态）
+                try {
+                  const [upOwner, upRepo] = upstreamFullName.split('/');
+                  const cmpRes = await fetch(
+                    `https://api.github.com/repos/${upOwner}/${upRepo}/compare/${upstreamBranch}...${repo.owner}:${forkBranch}`,
+                    { headers }
+                  );
+                  if (cmpRes.ok) {
+                    const cmp = await cmpRes.json().catch(() => ({}));
+                    const behind = Number(cmp && cmp.behind_by);
+                    if (!Number.isNaN(behind) && behind > 0) {
+                      isBehindUpstream = true;
+                    }
+                  }
+                } catch {
+                  // compare 失败时保持默认 false
+                }
           }
 
           store.updateRepo(repo.id, {
@@ -570,6 +611,7 @@ app.post('/api/import-forks', async (req, res) => {
             upstreamPushedAt,
             upstreamLastCommitSha,
             upstreamLastCommitMessage,
+                isBehindUpstream,
           });
         } catch {
           // 新增仓库的元信息补充失败时忽略，不影响导入结果
@@ -664,7 +706,8 @@ app.post('/api/refresh-meta', async (req, res) => {
 
         // 当前 fork 仓库信息
         const forkPushedAt = info.pushed_at || null;
-        const forkBranch = info.default_branch || r.branch || 'main';
+        // 需同步判断必须以用户配置的分支为准
+        const forkBranch = r.branch || info.default_branch || 'main';
 
         let forkLastCommitSha = null;
         let forkLastCommitMessage = null;
@@ -688,7 +731,8 @@ app.post('/api/refresh-meta', async (req, res) => {
         // 上游仓库信息（info.fork && info.parent 必定存在）
         let upstreamFullName = info.parent.full_name;
         let upstreamPushedAt = info.parent.pushed_at || null;
-        let upstreamBranch = info.parent.default_branch || 'main';
+        // 同理：上游对比也应优先使用用户配置的分支名
+        let upstreamBranch = r.branch || info.parent.default_branch || 'main';
         let upstreamLastCommitSha = null;
         let upstreamLastCommitMessage = null;
 

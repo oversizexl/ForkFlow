@@ -400,6 +400,8 @@ async function refreshMetaInBackground() {
   try {
     // 由后端根据最近刷新时间决定是否真正访问 GitHub
     await api('/api/refresh-meta', { method: 'POST' });
+    // 刷新后重新拉取列表，避免“后台已算出需同步，但页面仍显示旧状态”
+    await loadRepos();
     // 成功或被跳过都不提示，避免打扰用户
   } catch {
     // 后台刷新失败静默忽略
