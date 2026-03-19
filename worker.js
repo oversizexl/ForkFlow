@@ -364,7 +364,7 @@ export default {
             if (infoRes.ok) {
               const info = await infoRes.json();
               const forkPushedAt = info.pushed_at || null;
-              const forkBranch = info.default_branch || branch || 'main';
+              const forkBranch = branch || info.default_branch || 'main';
 
               let forkLastCommitSha = null;
               let forkLastCommitMessage = null;
@@ -389,10 +389,11 @@ export default {
               let upstreamPushedAt = null;
               let upstreamLastCommitSha = null;
               let upstreamLastCommitMessage = null;
+              let isBehindUpstream = false;
               if (info.parent && info.parent.full_name) {
                 upstreamFullName = info.parent.full_name;
                 upstreamPushedAt = info.parent.pushed_at || null;
-                const upstreamBranch = info.parent.default_branch || 'main';
+                const upstreamBranch = branch || info.parent.default_branch || 'main';
                 try {
                   const uRes = await fetch(
                     `${GITHUB_API}/repos/${info.parent.owner.login}/${info.parent.name}/commits?per_page=1&sha=${upstreamBranch}`,
@@ -409,6 +410,24 @@ export default {
                 } catch {
                   // ignore
                 }
+
+                // compare 判断是否落后上游（用于前端“需同步”状态）
+                try {
+                  const [upOwner, upRepo] = upstreamFullName.split('/');
+                  const cmpRes = await fetch(
+                    `${GITHUB_API}/repos/${upOwner}/${upRepo}/compare/${upstreamBranch}...${owner}:${forkBranch}`,
+                    { headers }
+                  );
+                  if (cmpRes.ok) {
+                    const cmp = await cmpRes.json().catch(() => ({}));
+                    const behind = Number(cmp && cmp.behind_by);
+                    if (!Number.isNaN(behind) && behind > 0) {
+                      isBehindUpstream = true;
+                    }
+                  }
+                } catch {
+                  // ignore
+                }
               }
               await updateRepo(env, result.item.id, {
                 forkPushedAt,
@@ -419,6 +438,7 @@ export default {
                 upstreamPushedAt,
                 upstreamLastCommitSha,
                 upstreamLastCommitMessage,
+                isBehindUpstream,
               });
             }
           }
@@ -657,7 +677,7 @@ export default {
               const info = await infoRes.json();
 
               const forkPushedAt = info.pushed_at || null;
-              const forkBranch = info.default_branch || repo.branch || 'main';
+              const forkBranch = repo.branch || info.default_branch || 'main';
 
               let forkLastCommitSha = null;
               let forkLastCommitMessage = null;
@@ -682,11 +702,12 @@ export default {
               let upstreamPushedAt = null;
               let upstreamLastCommitSha = null;
               let upstreamLastCommitMessage = null;
+              let isBehindUpstream = false;
 
               if (info.parent && info.parent.full_name) {
                 upstreamFullName = info.parent.full_name;
                 upstreamPushedAt = info.parent.pushed_at || null;
-                const upstreamBranch = info.parent.default_branch || 'main';
+                const upstreamBranch = repo.branch || info.parent.default_branch || 'main';
                 try {
                   const uRes = await fetch(
                     `${GITHUB_API}/repos/${info.parent.owner.login}/${info.parent.name}/commits?per_page=1&sha=${upstreamBranch}`,
@@ -703,6 +724,24 @@ export default {
                 } catch {
                   // ignore
                 }
+
+                // compare 判断是否落后上游（用于前端“需同步”状态）
+                try {
+                  const [upOwner, upRepo] = upstreamFullName.split('/');
+                  const cmpRes = await fetch(
+                    `${GITHUB_API}/repos/${upOwner}/${upRepo}/compare/${upstreamBranch}...${repo.owner}:${forkBranch}`,
+                    { headers }
+                  );
+                  if (cmpRes.ok) {
+                    const cmp = await cmpRes.json().catch(() => ({}));
+                    const behind = Number(cmp && cmp.behind_by);
+                    if (!Number.isNaN(behind) && behind > 0) {
+                      isBehindUpstream = true;
+                    }
+                  }
+                } catch {
+                  // ignore
+                }
               }
 
               await updateRepo(env, repo.id, {
@@ -713,6 +752,7 @@ export default {
                 upstreamPushedAt,
                 upstreamLastCommitSha,
                 upstreamLastCommitMessage,
+                isBehindUpstream,
               });
             } catch {
               // ignore 单个失败
@@ -792,7 +832,7 @@ export default {
             }
 
             const forkPushedAt = info.pushed_at || null;
-            const forkBranch = info.default_branch || r.branch || 'main';
+            const forkBranch = r.branch || info.default_branch || 'main';
 
             let forkLastCommitSha = null;
             let forkLastCommitMessage = null;
@@ -815,9 +855,10 @@ export default {
 
             let upstreamFullName = info.parent.full_name;
             let upstreamPushedAt = info.parent.pushed_at || null;
-            let upstreamBranch = info.parent.default_branch || 'main';
+            let upstreamBranch = r.branch || info.parent.default_branch || 'main';
             let upstreamLastCommitSha = null;
             let upstreamLastCommitMessage = null;
+            let isBehindUpstream = false;
 
             try {
               const uRes = await fetch(
@@ -836,6 +877,24 @@ export default {
               // ignore
             }
 
+            // compare 判断是否落后上游（用于前端“需同步”状态）
+            try {
+              const [upOwner, upRepo] = upstreamFullName.split('/');
+              const cmpRes = await fetch(
+                `${GITHUB_API}/repos/${upOwner}/${upRepo}/compare/${upstreamBranch}...${r.owner}:${forkBranch}`,
+                { headers }
+              );
+              if (cmpRes.ok) {
+                const cmp = await cmpRes.json().catch(() => ({}));
+                const behind = Number(cmp && cmp.behind_by);
+                if (!Number.isNaN(behind) && behind > 0) {
+                  isBehindUpstream = true;
+                }
+              }
+            } catch {
+              // ignore
+            }
+
             await updateRepo(env, r.id, {
               forkPushedAt,
               forkLastCommitSha,
@@ -844,6 +903,7 @@ export default {
               upstreamPushedAt,
               upstreamLastCommitSha,
               upstreamLastCommitMessage,
+              isBehindUpstream,
             });
 
             results.push({
