@@ -90,7 +90,7 @@ app.get('/api/auth/callback', async (req, res) => {
 
 // 元信息刷新节流：限制一定时间内的实际 GitHub 刷新频率，避免触发限流
 let lastMetaRefreshAt = 0;
-const MIN_REFRESH_INTERVAL_MS = 5 * 1000; // 5 秒内只允许一次真实刷新*** End Patch```} -->
+const MIN_REFRESH_INTERVAL_MS = 5 * 1000; // 5 秒内只允许一次「全量」刷新
 
 // 获取所有 fork 项目
 app.get('/api/repos', (req, res) => {
@@ -654,6 +654,164 @@ app.post('/api/import-forks', async (req, res) => {
   }
 });
 
+/** 单条仓库元信息刷新（与全量 refresh-meta 中单次逻辑一致）；不计入全量节流 */
+async function refreshOneRepoMetaServer(r, token) {
+  const headers = githubHeaders(token);
+  try {
+    const infoRes = await fetch(`https://api.github.com/repos/${r.owner}/${r.repo}`, {
+      headers,
+    });
+    if (!infoRes.ok) {
+      if (infoRes.status === 404) {
+        store.removeRepo(r.id);
+        return {
+          id: r.id,
+          owner: r.owner,
+          repo: r.repo,
+          ok: false,
+          message: 'GitHub 仓库不存在，已自动从列表中移除',
+        };
+      }
+      const msg = (await infoRes.json().catch(() => ({}))).message || infoRes.statusText;
+      return { id: r.id, owner: r.owner, repo: r.repo, ok: false, message: msg };
+    }
+    const info = await infoRes.json();
+
+    if (!info.fork || !info.parent) {
+      store.removeRepo(r.id);
+      return {
+        id: r.id,
+        owner: r.owner,
+        repo: r.repo,
+        ok: false,
+        message: '仓库已不再是 Fork，已自动从列表中移除',
+      };
+    }
+
+    const forkPushedAt = info.pushed_at || null;
+    const forkBranch = r.branch || info.default_branch || 'main';
+
+    let forkLastCommitSha = null;
+    let forkLastCommitMessage = null;
+    try {
+      const cRes = await fetch(
+        `https://api.github.com/repos/${r.owner}/${r.repo}/commits?per_page=1&sha=${forkBranch}`,
+        { headers }
+      );
+      if (cRes.ok) {
+        const commits = await cRes.json();
+        if (Array.isArray(commits) && commits[0]) {
+          forkLastCommitSha = commits[0].sha || null;
+          forkLastCommitMessage =
+            (commits[0].commit && commits[0].commit.message) || null;
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    let upstreamFullName = info.parent.full_name;
+    let upstreamPushedAt = info.parent.pushed_at || null;
+    let upstreamBranch = r.branch || info.parent.default_branch || 'main';
+    let upstreamLastCommitSha = null;
+    let upstreamLastCommitMessage = null;
+
+    try {
+      const uRes = await fetch(
+        `https://api.github.com/repos/${info.parent.owner.login}/${info.parent.name}/commits?per_page=1&sha=${upstreamBranch}`,
+        { headers }
+      );
+      if (uRes.ok) {
+        const uCommits = await uRes.json();
+        if (Array.isArray(uCommits) && uCommits[0]) {
+          upstreamLastCommitSha = uCommits[0].sha || null;
+          upstreamLastCommitMessage =
+            (uCommits[0].commit && uCommits[0].commit.message) || null;
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    let isBehindUpstream = false;
+    try {
+      const [upOwner, upRepo] = upstreamFullName.split('/');
+      if (upOwner && upRepo) {
+        const cmpRes = await fetch(
+          `https://api.github.com/repos/${upOwner}/${upRepo}/compare/${upstreamBranch}...${r.owner}:${forkBranch}`,
+          { headers }
+        );
+        if (cmpRes.ok) {
+          const cmp = await cmpRes.json().catch(() => ({}));
+          const behind = Number(cmp && cmp.behind_by);
+          if (!Number.isNaN(behind) && behind > 0) {
+            isBehindUpstream = true;
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    store.updateRepo(r.id, {
+      forkPushedAt,
+      forkLastCommitSha,
+      forkLastCommitMessage,
+      upstreamFullName,
+      upstreamPushedAt,
+      upstreamLastCommitSha,
+      upstreamLastCommitMessage,
+      isBehindUpstream,
+    });
+
+    return {
+      id: r.id,
+      owner: r.owner,
+      repo: r.repo,
+      ok: true,
+      forkPushedAt,
+      forkLastCommitSha,
+      forkLastCommitMessage,
+      upstreamFullName,
+      upstreamPushedAt,
+      upstreamLastCommitSha,
+      upstreamLastCommitMessage,
+    };
+  } catch (err) {
+    return {
+      id: r.id,
+      owner: r.owner,
+      repo: r.repo,
+      ok: false,
+      message: err.message || '刷新失败',
+    };
+  }
+}
+
+// 刷新单个仓库元信息（不计入全量 refresh-meta 的 5 秒节流）
+app.post('/api/repos/:id/refresh-meta', async (req, res) => {
+  const token = getTokenFromReq(req);
+  if (!token) {
+    return res
+      .status(401)
+      .json({ ok: false, message: '请使用 GitHub 登录或在 .env 中配置 GITHUB_TOKEN' });
+  }
+  try {
+    const r = store.getRepo(req.params.id);
+    if (!r) {
+      return res.status(404).json({ ok: false, message: '未找到该仓库' });
+    }
+    const data = await refreshOneRepoMetaServer(r, token);
+    res.json({
+      ok: true,
+      message: data.ok ? '已刷新' : data.message || '刷新结束',
+      data,
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: e.message });
+  }
+});
+
 // 刷新所有仓库的时间和最新 commit 信息（包括上游）
 app.post('/api/refresh-meta', async (req, res) => {
   const token = getTokenFromReq(req);
@@ -688,150 +846,9 @@ app.post('/api/refresh-meta', async (req, res) => {
       return res.json({ ok: true, message: '暂无配置的仓库', data: [] });
     }
 
-    const headers = githubHeaders(token);
-
     const results = [];
-
     for (const r of repos) {
-      try {
-        const infoRes = await fetch(`https://api.github.com/repos/${r.owner}/${r.repo}`, {
-          headers,
-        });
-        if (!infoRes.ok) {
-          // 仓库在 GitHub 上已不存在（例如用户在网页端删除），则自动从本地列表中移除，避免脏数据
-          if (infoRes.status === 404) {
-            store.removeRepo(r.id);
-            results.push({
-              id: r.id,
-              owner: r.owner,
-              repo: r.repo,
-              ok: false,
-              message: 'GitHub 仓库不存在，已自动从列表中移除',
-            });
-            continue;
-          }
-          const msg = (await infoRes.json().catch(() => ({}))).message || infoRes.statusText;
-          results.push({ id: r.id, owner: r.owner, repo: r.repo, ok: false, message: msg });
-          continue;
-        }
-        const info = await infoRes.json();
-
-        // 如果仓库已经不再是 fork（例如用户请求 GitHub 支持取消 fork），也把它当作脏数据移除
-        if (!info.fork || !info.parent) {
-          store.removeRepo(r.id);
-          results.push({
-            id: r.id,
-            owner: r.owner,
-            repo: r.repo,
-            ok: false,
-            message: '仓库已不再是 Fork，已自动从列表中移除',
-          });
-          continue;
-        }
-
-        // 当前 fork 仓库信息
-        const forkPushedAt = info.pushed_at || null;
-        // 需同步判断必须以用户配置的分支为准
-        const forkBranch = r.branch || info.default_branch || 'main';
-
-        let forkLastCommitSha = null;
-        let forkLastCommitMessage = null;
-        try {
-          const cRes = await fetch(
-            `https://api.github.com/repos/${r.owner}/${r.repo}/commits?per_page=1&sha=${forkBranch}`,
-            { headers }
-          );
-          if (cRes.ok) {
-            const commits = await cRes.json();
-            if (Array.isArray(commits) && commits[0]) {
-              forkLastCommitSha = commits[0].sha || null;
-              forkLastCommitMessage =
-                (commits[0].commit && commits[0].commit.message) || null;
-            }
-          }
-        } catch {
-          // 忽略单个仓库 commit 查询失败
-        }
-
-        // 上游仓库信息（info.fork && info.parent 必定存在）
-        let upstreamFullName = info.parent.full_name;
-        let upstreamPushedAt = info.parent.pushed_at || null;
-        // 同理：上游对比也应优先使用用户配置的分支名
-        let upstreamBranch = r.branch || info.parent.default_branch || 'main';
-        let upstreamLastCommitSha = null;
-        let upstreamLastCommitMessage = null;
-
-        try {
-          const uRes = await fetch(
-            `https://api.github.com/repos/${info.parent.owner.login}/${info.parent.name}/commits?per_page=1&sha=${upstreamBranch}`,
-            { headers }
-          );
-          if (uRes.ok) {
-            const uCommits = await uRes.json();
-            if (Array.isArray(uCommits) && uCommits[0]) {
-              upstreamLastCommitSha = uCommits[0].sha || null;
-              upstreamLastCommitMessage =
-                (uCommits[0].commit && uCommits[0].commit.message) || null;
-            }
-          }
-        } catch {
-          // 忽略上游 commit 查询失败
-        }
-
-        // 使用 compare API 判断是否落后上游
-        let isBehindUpstream = false;
-        try {
-          const [upOwner, upRepo] = upstreamFullName.split('/');
-          if (upOwner && upRepo) {
-            const cmpRes = await fetch(
-              `https://api.github.com/repos/${upOwner}/${upRepo}/compare/${upstreamBranch}...${r.owner}:${forkBranch}`,
-              { headers }
-            );
-            if (cmpRes.ok) {
-              const cmp = await cmpRes.json().catch(() => ({}));
-              const behind = Number(cmp && cmp.behind_by);
-              if (!Number.isNaN(behind) && behind > 0) {
-                isBehindUpstream = true;
-              }
-            }
-          }
-        } catch {
-          // compare 失败时保持默认 false，不影响其他信息
-        }
-
-        store.updateRepo(r.id, {
-          forkPushedAt,
-          forkLastCommitSha,
-          forkLastCommitMessage,
-          upstreamFullName,
-          upstreamPushedAt,
-          upstreamLastCommitSha,
-          upstreamLastCommitMessage,
-          isBehindUpstream,
-        });
-
-        results.push({
-          id: r.id,
-          owner: r.owner,
-          repo: r.repo,
-          ok: true,
-          forkPushedAt,
-          forkLastCommitSha,
-          forkLastCommitMessage,
-          upstreamFullName,
-          upstreamPushedAt,
-          upstreamLastCommitSha,
-          upstreamLastCommitMessage,
-        });
-      } catch (err) {
-        results.push({
-          id: r.id,
-          owner: r.owner,
-          repo: r.repo,
-          ok: false,
-          message: err.message || '刷新失败',
-        });
-      }
+      results.push(await refreshOneRepoMetaServer(r, token));
     }
 
     res.json({

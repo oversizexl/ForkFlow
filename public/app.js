@@ -324,6 +324,7 @@ function renderList(repos) {
       <td><code>${escapeHtml(r.branch || 'main')}</code></td>
       <td>
         <div class="cell-actions">
+          <button type="button" class="btn btn-secondary btn-sm refresh-meta-one" data-id="${r.id}" title="仅刷新该仓库时间与 commit（不合并上游）">刷新</button>
           <button type="button" class="btn btn-primary btn-sm sync-one" data-id="${r.id}">同步</button>
           <button type="button" class="btn btn-danger btn-sm delete-one" data-id="${r.id}">删除</button>
         </div>
@@ -333,6 +334,9 @@ function renderList(repos) {
     )
     .join('');
 
+  tbody.querySelectorAll('.refresh-meta-one').forEach((btn) => {
+    btn.addEventListener('click', () => refreshMetaOne(btn.dataset.id));
+  });
   tbody.querySelectorAll('.sync-one').forEach((btn) => {
     btn.addEventListener('click', () => syncOne(btn.dataset.id));
   });
@@ -417,6 +421,47 @@ async function syncOne(id) {
           allReposCache[idx] = one.data;
         }
         renderList(allReposCache);
+      }
+    }
+  } catch (e) {
+    const msg = e.message || '';
+    setCellStatus(id, msg, false);
+    showToast(msg, 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+/** 仅刷新该仓库元信息（GitHub 时间与 commit / 需同步），不执行 merge 同步 */
+async function refreshMetaOne(id) {
+  const btn = document.querySelector(`.refresh-meta-one[data-id="${id}"]`);
+  if (btn) btn.disabled = true;
+  setCellStatus(id, '刷新信息中…', true);
+  try {
+    const res = await api(`/api/repos/${encodeURIComponent(id)}/refresh-meta`, {
+      method: 'POST',
+    });
+    const row = res.data;
+    if (row && row.ok) {
+      setCellStatus(id, '已更新', true);
+      showToast('仓库信息已更新', 'success');
+      const one = await api(`/api/repos/${encodeURIComponent(id)}`);
+      if (one && one.ok && one.data) {
+        const idx = allReposCache.findIndex((r) => String(r.id) === String(id));
+        if (idx !== -1) {
+          allReposCache[idx] = one.data;
+        }
+        renderList(allReposCache);
+      } else {
+        loadRepos();
+      }
+    } else {
+      const msg = (row && row.message) || '刷新失败';
+      const removed = msg.includes('移除');
+      setCellStatus(id, msg, false);
+      showToast(msg, removed ? 'info' : 'error');
+      if (removed) {
+        loadRepos();
       }
     }
   } catch (e) {

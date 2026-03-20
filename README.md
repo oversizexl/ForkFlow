@@ -133,6 +133,7 @@ public/                 # 前端（部署时与 Worker 一起发布）
 | GET          | `/api/repos`         | 仓库列表                                              |
 | POST         | `/api/repos`         | 添加仓库（body: `owner?`, `repo`, `branch?`, `label?`） |
 | DELETE/PATCH | `/api/repos/:id`     | 删除/更新仓库                                           |
+| POST         | `/api/repos/:id/refresh-meta` | 仅刷新该仓库元信息（时间/commit/需同步），约 1 次 KV 写（Worker） |
 | GET          | `/api/current-user`  | 当前 GitHub 用户                                      |
 | POST         | `/api/sync/:id`      | 同步单仓                                              |
 | POST         | `/api/sync-all`      | 批量同步（Query: `cursor`、`limit`；前端分批，避免 Worker 单次外呼过多） |

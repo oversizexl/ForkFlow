@@ -544,7 +544,7 @@ code {
 
 .cell-actions {
   display: flex;
-  gap: 0.42rem;
+  gap: 0.28rem;
   flex-wrap: nowrap;
   justify-content: flex-start;
   align-items: center;
@@ -796,6 +796,10 @@ code {
 @media (max-width: 640px) {
   .form {
     grid-template-columns: 1fr;
+  }
+
+  .cell-actions {
+    flex-wrap: wrap;
   }
 
   .actions-left .btn,

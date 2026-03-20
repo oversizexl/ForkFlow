@@ -192,6 +192,207 @@ async function updateRepo(env, id, updates, username) {
   return { ok: true, item: repos[idx] };
 }
 
+/**
+ * 刷新单条仓库 GitHub 元信息（与 POST /api/refresh-meta 批内逻辑一致）。
+ * @returns {{ result: object, kvWrites: number }}
+ */
+async function refreshOneRepoMeta(env, r, username, headers) {
+  let kvWrites = 0;
+  try {
+    const infoRes = await fetch(
+      `${GITHUB_API}/repos/${r.owner}/${r.repo}`,
+      { headers }
+    );
+    if (!infoRes.ok) {
+      if (infoRes.status === 404) {
+        await removeRepo(env, r.id, username);
+        kvWrites = 1;
+        return {
+          result: {
+            id: r.id,
+            owner: r.owner,
+            repo: r.repo,
+            ok: false,
+            message: 'GitHub 仓库不存在，已自动从列表中移除',
+          },
+          kvWrites,
+        };
+      }
+      const msg =
+        (await infoRes.json().catch(() => ({}))).message || infoRes.statusText;
+      return {
+        result: {
+          id: r.id,
+          owner: r.owner,
+          repo: r.repo,
+          ok: false,
+          message: msg,
+        },
+        kvWrites: 0,
+      };
+    }
+
+    const info = await infoRes.json();
+
+    if (!info.fork || !info.parent) {
+      await removeRepo(env, r.id, username);
+      kvWrites = 1;
+      return {
+        result: {
+          id: r.id,
+          owner: r.owner,
+          repo: r.repo,
+          ok: false,
+          message: '仓库已不再是 Fork，已自动从列表中移除',
+        },
+        kvWrites,
+      };
+    }
+
+    const forkPushedAt = info.pushed_at || null;
+    const forkBranch = r.branch || info.default_branch || 'main';
+
+    let forkLastCommitSha = null;
+    let forkLastCommitMessage = null;
+    let metaForkCommitHttpStatus = null;
+    let metaForkCommitError = null;
+    try {
+      const c = await fetchJsonWithRetry(
+        `${GITHUB_API}/repos/${r.owner}/${r.repo}/commits?per_page=1&sha=${forkBranch}`,
+        { headers },
+        1
+      );
+      metaForkCommitHttpStatus = typeof c.status === 'number' ? c.status : null;
+      if (c.fetchError) {
+        metaForkCommitError = String(c.fetchError).slice(0, 240);
+      }
+      if (c.ok) {
+        const commits = c.data;
+        if (Array.isArray(commits) && commits[0]) {
+          forkLastCommitSha = commits[0].sha || null;
+          forkLastCommitMessage =
+            (commits[0].commit && commits[0].commit.message) || null;
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    let upstreamFullName = info.parent.full_name;
+    let upstreamPushedAt = info.parent.pushed_at || null;
+    let upstreamBranch = r.branch || info.parent.default_branch || 'main';
+
+    let upstreamLastCommitSha = null;
+    let upstreamLastCommitMessage = null;
+    let metaUpstreamCommitHttpStatus = null;
+    let metaUpstreamCommitError = null;
+    try {
+      const u = await fetchJsonWithRetry(
+        `${GITHUB_API}/repos/${info.parent.owner.login}/${info.parent.name}/commits?per_page=1&sha=${upstreamBranch}`,
+        { headers },
+        1
+      );
+      metaUpstreamCommitHttpStatus = typeof u.status === 'number' ? u.status : null;
+      if (u.fetchError) {
+        metaUpstreamCommitError = String(u.fetchError).slice(0, 240);
+      }
+      if (u.ok) {
+        const uCommits = u.data;
+        if (Array.isArray(uCommits) && uCommits[0]) {
+          upstreamLastCommitSha = uCommits[0].sha || null;
+          upstreamLastCommitMessage =
+            (uCommits[0].commit && uCommits[0].commit.message) || null;
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    let isBehindUpstream = false;
+    let metaCompareHttpStatus = null;
+    let metaCompareError = null;
+    try {
+      const [upOwner, upRepo] = upstreamFullName.split('/');
+      const cmpRes = await fetch(
+        `${GITHUB_API}/repos/${upOwner}/${upRepo}/compare/${upstreamBranch}...${r.owner}:${forkBranch}`,
+        { headers }
+      );
+      metaCompareHttpStatus = cmpRes.status;
+      if (cmpRes.ok) {
+        const cmp = await cmpRes.json().catch(() => ({}));
+        const behind = Number(cmp && cmp.behind_by);
+        if (!Number.isNaN(behind) && behind > 0) {
+          isBehindUpstream = true;
+        }
+      }
+    } catch (e) {
+      metaCompareError = ((e && e.message) || String(e)).slice(0, 240);
+    }
+
+    const metaRefreshedAt = new Date().toISOString();
+
+    await updateRepo(env, r.id, {
+      forkPushedAt,
+      forkLastCommitSha: forkLastCommitSha || r.forkLastCommitSha || null,
+      forkLastCommitMessage:
+        forkLastCommitMessage || r.forkLastCommitMessage || null,
+      upstreamFullName,
+      upstreamPushedAt,
+      upstreamLastCommitSha:
+        upstreamLastCommitSha || r.upstreamLastCommitSha || null,
+      upstreamLastCommitMessage:
+        upstreamLastCommitMessage || r.upstreamLastCommitMessage || null,
+      isBehindUpstream,
+      metaRefreshedAt,
+      metaForkCommitHttpStatus,
+      metaUpstreamCommitHttpStatus,
+      metaCompareHttpStatus,
+      metaForkCommitError: metaForkCommitError || null,
+      metaUpstreamCommitError: metaUpstreamCommitError || null,
+      metaCompareError: metaCompareError || null,
+    }, username);
+    kvWrites = 1;
+
+    const mergedForkSha = forkLastCommitSha || r.forkLastCommitSha || null;
+    const mergedUpSha =
+      upstreamLastCommitSha || r.upstreamLastCommitSha || null;
+
+    return {
+      result: {
+        id: r.id,
+        owner: r.owner,
+        repo: r.repo,
+        ok: true,
+        forkPushedAt,
+        forkLastCommitSha: mergedForkSha,
+        upstreamFullName,
+        upstreamPushedAt,
+        upstreamLastCommitSha: mergedUpSha,
+        isBehindUpstream,
+        metaRefreshedAt,
+        metaForkCommitHttpStatus,
+        metaUpstreamCommitHttpStatus,
+        metaCompareHttpStatus,
+        metaForkCommitError: metaForkCommitError || null,
+        metaUpstreamCommitError: metaUpstreamCommitError || null,
+        metaCompareError: metaCompareError || null,
+      },
+      kvWrites,
+    };
+  } catch (err) {
+    return {
+      result: {
+        id: r.id,
+        owner: r.owner,
+        repo: r.repo,
+        ok: false,
+        message: err.message || '刷新失败',
+      },
+      kvWrites: 0,
+    };
+  }
+}
+
 // ---------- GitHub 同步逻辑（来自 sync.js） ----------
 async function syncOne(owner, repo, branch = 'main', token) {
   if (!token) {
@@ -585,6 +786,30 @@ export default {
         }
 
         return jsonResponse(result);
+      }
+
+      // 刷新单个仓库元信息（约 1 次 KV put，不跑整表 refresh-meta 批次）
+      const refreshOneMatch = pathname.match(/^\/api\/repos\/([^/]+)\/refresh-meta$/);
+      if (request.method === 'POST' && refreshOneMatch) {
+        if (!token) {
+          return jsonResponse(
+            { ok: false, message: '请使用 GitHub 登录或配置 GH_TOKEN' },
+            { status: 401 }
+          );
+        }
+        const id = refreshOneMatch[1];
+        const r = await getRepo(env, id, username);
+        if (!r) {
+          return jsonResponse({ ok: false, message: '未找到该仓库' }, { status: 404 });
+        }
+        const hdr = githubHeaders(token);
+        const { result, kvWrites } = await refreshOneRepoMeta(env, r, username, hdr);
+        return jsonResponse({
+          ok: true,
+          message: result.ok ? '已刷新' : result.message || '刷新结束',
+          data: result,
+          diag: { kvWritesThisBatch: kvWrites },
+        });
       }
 
       // 获取 / 删除 / 更新单个仓库
@@ -985,195 +1210,14 @@ export default {
         let kvWritesThisBatch = 0;
 
         for (const r of slice) {
-          try {
-            const infoRes = await fetch(
-              `${GITHUB_API}/repos/${r.owner}/${r.repo}`,
-              { headers }
-            );
-            if (!infoRes.ok) {
-              if (infoRes.status === 404) {
-                await removeRepo(env, r.id, username);
-                results.push({
-                  id: r.id,
-                  owner: r.owner,
-                  repo: r.repo,
-                  ok: false,
-                  message: 'GitHub 仓库不存在，已自动从列表中移除',
-                });
-                continue;
-              }
-              const msg =
-                (await infoRes.json().catch(() => ({}))).message ||
-                infoRes.statusText;
-              results.push({
-                id: r.id,
-                owner: r.owner,
-                repo: r.repo,
-                ok: false,
-                message: msg,
-              });
-              continue;
-            }
-
-            const info = await infoRes.json();
-
-            if (!info.fork || !info.parent) {
-              await removeRepo(env, r.id, username);
-              results.push({
-                id: r.id,
-                owner: r.owner,
-                repo: r.repo,
-                ok: false,
-                message: '仓库已不再是 Fork，已自动从列表中移除',
-              });
-              continue;
-            }
-
-            const forkPushedAt = info.pushed_at || null;
-            // 与本地一致：优先使用配置分支，否则使用 GitHub default_branch
-            const forkBranch = r.branch || info.default_branch || 'main';
-
-            // fork 最新 commit（与本地一致：不做回退/兜底）
-            let forkLastCommitSha = null;
-            let forkLastCommitMessage = null;
-            let metaForkCommitHttpStatus = null;
-            let metaForkCommitError = null;
-            try {
-              const c = await fetchJsonWithRetry(
-                `${GITHUB_API}/repos/${r.owner}/${r.repo}/commits?per_page=1&sha=${forkBranch}`,
-                { headers },
-                1
-              );
-              metaForkCommitHttpStatus =
-                typeof c.status === 'number' ? c.status : null;
-              if (c.fetchError) {
-                metaForkCommitError = String(c.fetchError).slice(0, 240);
-              }
-              if (c.ok) {
-                const commits = c.data;
-                if (Array.isArray(commits) && commits[0]) {
-                  forkLastCommitSha = commits[0].sha || null;
-                  forkLastCommitMessage =
-                    (commits[0].commit && commits[0].commit.message) || null;
-                }
-              }
-            } catch {
-              // ignore
-            }
-
-            let upstreamFullName = info.parent.full_name;
-            let upstreamPushedAt = info.parent.pushed_at || null;
-            // 与本地一致：优先使用配置分支，否则使用上游 default_branch
-            let upstreamBranch = r.branch || info.parent.default_branch || 'main';
-
-            // upstream 最新 commit（与本地一致：不做回退/兜底）
-            let upstreamLastCommitSha = null;
-            let upstreamLastCommitMessage = null;
-            let metaUpstreamCommitHttpStatus = null;
-            let metaUpstreamCommitError = null;
-            try {
-              const u = await fetchJsonWithRetry(
-                `${GITHUB_API}/repos/${info.parent.owner.login}/${info.parent.name}/commits?per_page=1&sha=${upstreamBranch}`,
-                { headers },
-                1
-              );
-              metaUpstreamCommitHttpStatus =
-                typeof u.status === 'number' ? u.status : null;
-              if (u.fetchError) {
-                metaUpstreamCommitError = String(u.fetchError).slice(0, 240);
-              }
-              if (u.ok) {
-                const uCommits = u.data;
-                if (Array.isArray(uCommits) && uCommits[0]) {
-                  upstreamLastCommitSha = uCommits[0].sha || null;
-                  upstreamLastCommitMessage =
-                    (uCommits[0].commit && uCommits[0].commit.message) || null;
-                }
-              }
-            } catch {
-              // ignore
-            }
-
-            // compare 判断是否落后上游（与本地一致：compare 失败默认 false）
-            let isBehindUpstream = false;
-            let metaCompareHttpStatus = null;
-            let metaCompareError = null;
-            try {
-              const [upOwner, upRepo] = upstreamFullName.split('/');
-              const cmpRes = await fetch(
-                `${GITHUB_API}/repos/${upOwner}/${upRepo}/compare/${upstreamBranch}...${r.owner}:${forkBranch}`,
-                { headers }
-              );
-              metaCompareHttpStatus = cmpRes.status;
-              if (cmpRes.ok) {
-                const cmp = await cmpRes.json().catch(() => ({}));
-                const behind = Number(cmp && cmp.behind_by);
-                if (!Number.isNaN(behind) && behind > 0) {
-                  isBehindUpstream = true;
-                }
-              }
-            } catch (e) {
-              metaCompareError = ((e && e.message) || String(e)).slice(0, 240);
-            }
-
-            const metaRefreshedAt = new Date().toISOString();
-
-            await updateRepo(env, r.id, {
-              forkPushedAt,
-              // commit 获取失败时保留旧值，避免偶发失败把已有数据清空
-              forkLastCommitSha: forkLastCommitSha || r.forkLastCommitSha || null,
-              forkLastCommitMessage:
-                forkLastCommitMessage || r.forkLastCommitMessage || null,
-              upstreamFullName,
-              upstreamPushedAt,
-              upstreamLastCommitSha:
-                upstreamLastCommitSha || r.upstreamLastCommitSha || null,
-              upstreamLastCommitMessage:
-                upstreamLastCommitMessage || r.upstreamLastCommitMessage || null,
-              isBehindUpstream,
-              metaRefreshedAt,
-              metaForkCommitHttpStatus,
-              metaUpstreamCommitHttpStatus,
-              metaCompareHttpStatus,
-              // 必须每次写入：否则 updateRepo 合并旧对象时，会残留上一次的 *_Error 字符串
-              metaForkCommitError: metaForkCommitError || null,
-              metaUpstreamCommitError: metaUpstreamCommitError || null,
-              metaCompareError: metaCompareError || null,
-            }, username);
-            kvWritesThisBatch += 1;
-
-            const mergedForkSha = forkLastCommitSha || r.forkLastCommitSha || null;
-            const mergedUpSha =
-              upstreamLastCommitSha || r.upstreamLastCommitSha || null;
-
-            results.push({
-              id: r.id,
-              owner: r.owner,
-              repo: r.repo,
-              ok: true,
-              forkPushedAt,
-              forkLastCommitSha: mergedForkSha,
-              upstreamFullName,
-              upstreamPushedAt,
-              upstreamLastCommitSha: mergedUpSha,
-              isBehindUpstream,
-              metaRefreshedAt,
-              metaForkCommitHttpStatus,
-              metaUpstreamCommitHttpStatus,
-              metaCompareHttpStatus,
-              metaForkCommitError: metaForkCommitError || null,
-              metaUpstreamCommitError: metaUpstreamCommitError || null,
-              metaCompareError: metaCompareError || null,
-            });
-          } catch (err) {
-            results.push({
-              id: r.id,
-              owner: r.owner,
-              repo: r.repo,
-              ok: false,
-              message: err.message || '刷新失败',
-            });
-          }
+          const { result, kvWrites } = await refreshOneRepoMeta(
+            env,
+            r,
+            username,
+            headers
+          );
+          results.push(result);
+          kvWritesThisBatch += kvWrites;
         }
 
         const nextCursor = cursor + slice.length;
