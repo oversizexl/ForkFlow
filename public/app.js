@@ -41,6 +41,7 @@ function handleOAuthCallback() {
   return false;
 }
 
+/** 根据 token 更新顶栏登录态；有 token 时请求一次 /api/current-user，供首屏与 Owner 预填复用 */
 async function updateAuthUI() {
   const hasToken = !!getStoredToken();
   const loginBtn = document.getElementById('loginBtn');
@@ -53,22 +54,25 @@ async function updateAuthUI() {
     if (loginBtn) loginBtn.style.display = 'inline-flex';
     if (logoutBtn) logoutBtn.style.display = 'none';
     if (authUser) authUser.style.display = 'none';
-    return;
+    return null;
   }
 
   if (loginBtn) loginBtn.style.display = 'none';
   if (logoutBtn) logoutBtn.style.display = 'inline-flex';
 
-  if (!authUser || !authAvatar || !authName) return;
+  if (!authUser || !authAvatar || !authName) return null;
 
   try {
-    const { ok, login, name, avatar_url: avatarUrl } = await api('/api/current-user');
-    if (!ok) return;
+    const data = await api('/api/current-user');
+    if (!data.ok) return null;
     authUser.style.display = 'flex';
-    authAvatar.src = avatarUrl || 'https://avatars.githubusercontent.com/u/9919?v=4';
-    authName.textContent = login || name || '';
+    authAvatar.src =
+      data.avatar_url || 'https://avatars.githubusercontent.com/u/9919?v=4';
+    authName.textContent = data.login || data.name || '';
+    return data;
   } catch {
     // 忽略用户信息获取失败，只保留登录/退出按钮状态
+    return null;
   }
 }
 
@@ -165,7 +169,7 @@ async function api(path, options = {}) {
   const data = await res.json().catch(() => ({}));
   if (res.status === 401) {
     clearStoredToken();
-    updateAuthUI();
+    void updateAuthUI();
   }
   if (!res.ok) throw new Error(data.message || res.statusText);
   return data;
@@ -574,15 +578,23 @@ addForm.addEventListener('submit', async (e) => {
 
 document.getElementById('syncAllBtn').addEventListener('click', syncAll);
 
-// OAuth 回调与登录/登出 UI
+// OAuth 回调与登录/登出 UI（只请求一次 current-user：顶栏 + Owner 预填 + loadRepos）
 handleOAuthCallback();
-updateAuthUI();
+(async () => {
+  const user = await updateAuthUI();
+  if (ownerInput && user?.ok && user.login && !ownerInput.value) {
+    ownerInput.value = user.login;
+  }
+  if (user?.ok) {
+    await loadRepos();
+  }
+})();
 document.getElementById('loginBtn')?.addEventListener('click', () => {
   window.location.href = API + '/api/auth/login';
 });
 document.getElementById('logoutBtn')?.addEventListener('click', () => {
   clearStoredToken();
-  updateAuthUI();
+  void updateAuthUI();
   const ownerInput = document.getElementById('owner');
   if (ownerInput) ownerInput.value = '';
   allReposCache = [];
@@ -604,23 +616,6 @@ document.getElementById('filterBehindBtn')?.addEventListener('click', () => {
   document.getElementById('filterAllBtn').classList.remove('filter-btn-active');
   renderList(allReposCache);
 });
-
-// 页面加载时尝试获取当前 GitHub 用户，并自动填充 Owner 输入框（仍允许用户覆盖）
-(async () => {
-  if (!ownerInput) return;
-  try {
-    const { ok, login } = await api('/api/current-user');
-    if (ok) {
-      if (login && !ownerInput.value) {
-        ownerInput.value = login;
-      }
-      // 有有效凭证时加载列表；元信息请手动点「刷新仓库信息」，避免每次打开页面都打 GitHub
-      await loadRepos();
-    }
-  } catch {
-    // 获取失败时静默忽略（未登录或 401），保持输入框为空且不加载列表
-  }
-})();
 
 // 搜索框监听
 const searchInput = document.getElementById('searchInput');
