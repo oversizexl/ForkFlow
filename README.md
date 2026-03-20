@@ -1,6 +1,7 @@
 # ForkFlow – GitHub Fork 同步管理仪表盘
 
-![GitHub Fork Sync Dashboard](https://bed.930419.xyz/file/1773743257173_iShot_2026-03-17_18.26.42.png) 
+<img width="1366" height="877" alt="iShot_2026-03-20_13 27 55" src="https://github.com/user-attachments/assets/13b3e0da-1d18-48f6-b8a8-953af5d06118" />
+
 
 **让 Fork 管理像流水一样丝滑。**
 
