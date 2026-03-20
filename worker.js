@@ -1104,9 +1104,10 @@ export default {
               metaForkCommitHttpStatus,
               metaUpstreamCommitHttpStatus,
               metaCompareHttpStatus,
-              ...(metaForkCommitError ? { metaForkCommitError } : {}),
-              ...(metaUpstreamCommitError ? { metaUpstreamCommitError } : {}),
-              ...(metaCompareError ? { metaCompareError } : {}),
+              // 必须每次写入：否则 updateRepo 合并旧对象时，会残留上一次的 *_Error 字符串
+              metaForkCommitError: metaForkCommitError || null,
+              metaUpstreamCommitError: metaUpstreamCommitError || null,
+              metaCompareError: metaCompareError || null,
             }, username);
             kvWritesThisBatch += 1;
 
@@ -1129,9 +1130,9 @@ export default {
               metaForkCommitHttpStatus,
               metaUpstreamCommitHttpStatus,
               metaCompareHttpStatus,
-              metaForkCommitError: metaForkCommitError || undefined,
-              metaUpstreamCommitError: metaUpstreamCommitError || undefined,
-              metaCompareError: metaCompareError || undefined,
+              metaForkCommitError: metaForkCommitError || null,
+              metaUpstreamCommitError: metaUpstreamCommitError || null,
+              metaCompareError: metaCompareError || null,
             });
           } catch (err) {
             results.push({
